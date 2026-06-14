@@ -367,15 +367,41 @@ func (m TableModel) WithSize(w, h int) TableModel {
 	m.height = h
 	// Recalculate column widths to fit terminal width
 	m.table.SetColumns(resizeCols(w))
-	// Reserve for all decorations (worst case all optional elements):
-	//   filterBar(1) + searchBox(2) + detail(3) + exportStatus(1) + help(1) = 8
-	//   Plus table borders+header overhead (~3) = ~11. Use h-12 for safety.
-	tableH := h - 12
+	m.popup = newPopup(w, h)
+	return m.recalcHeight()
+}
+
+// recalcHeight dynamically computes the exact available height for the table
+// based on which decorations are currently visible, maximizing table rows.
+func (m TableModel) recalcHeight() TableModel {
+	decorations := 1 // filterBar
+
+	// Search box
+	if m.searchFocused || m.search.Value() != "" {
+		decorations += 1 // input
+		if m.searchErr != nil {
+			decorations += 1 // error text
+		}
+	}
+
+	// Detail strip
+	if idx := m.table.Cursor(); idx >= 0 && idx < len(m.filtered) {
+		decorations += 5 // detail card with borders
+	}
+
+	// Export status
+	if m.exportStatus != "" {
+		decorations += 1
+	}
+
+	decorations += 1 // help bar
+
+	// Base height minus decorations and table borders/header (approx 2 lines)
+	tableH := m.height - decorations - 2
 	if tableH < 5 {
 		tableH = 5
 	}
 	m.table.SetHeight(tableH)
-	m.popup = newPopup(w, h)
 	return m
 }
 
@@ -464,6 +490,7 @@ func (m TableModel) Update(msg tea.Msg) (TableModel, tea.Cmd) {
 			m.exportStatus = StyleStatusOK.Render(fmt.Sprintf("  ✓ Exported %d rows → %s", msg.Rows, msg.Path))
 		}
 	}
+	m = m.recalcHeight()
 	return m, cmd
 }
 
