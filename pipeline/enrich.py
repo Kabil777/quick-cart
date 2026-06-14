@@ -1,6 +1,9 @@
 """
 pipeline/enrich.py — Stage 3: AI enrichment via NVIDIA / OpenAI-compatible API
 Supports sequential (default) and parallel (ThreadPoolExecutor) modes.
+
+Every run always calls the AI for ALL rows with text — no DB-skip logic.
+Rows with text_missing=True (rating-only) skip AI and derive sentiment from rating.
 """
 
 import json
@@ -21,7 +24,7 @@ _client_local = threading.local()  # thread-safe client per thread
 
 
 def _sentiment_from_rating(rating) -> str:
-    """Derive sentiment from star rating when no text is available."""
+    """Derive sentiment from star rating when no feedback text is available."""
     import math
     if rating is None or (isinstance(rating, float) and math.isnan(rating)):
         return "neutral"
@@ -126,7 +129,6 @@ def _call_ai(batch: list[dict], attempt: int = 0, token_usage: TokenUsage = None
             max_tokens=AI_MAX_TOKENS * len(batch),
             stream=False,
         )
-        # ── Capture token usage ──────────────────────────────────────────────
         if token_usage is not None:
             token_usage.add(getattr(completion, 'usage', None))
 
@@ -145,7 +147,7 @@ def _call_ai(batch: list[dict], attempt: int = 0, token_usage: TokenUsage = None
             if token_usage is not None:
                 with token_usage._lock:
                     token_usage.retries += 1
-            time.sleep(2 ** attempt)  # exponential backoff
+            time.sleep(2 ** attempt)
             return _call_ai(batch, attempt + 1, token_usage)
         else:
             return [
@@ -154,59 +156,37 @@ def _call_ai(batch: list[dict], attempt: int = 0, token_usage: TokenUsage = None
             ]
 
 
-def _load_existing_ids(db_path: str) -> set:
-    """Return set of IDs already stored in feedback.db (to skip re-enrichment)."""
-    import sqlite3, os
-    if not os.path.exists(db_path):
-        return set()
-    try:
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute("SELECT id FROM feedback").fetchall()
-        conn.close()
-        return {str(r[0]) for r in rows}
-    except Exception:
-        return set()
+def _split_text_and_rating_only(df: pd.DataFrame):
+    """Split df into rows with text (go to AI) and rating-only rows (derive from star)."""
+    mask_no_text = df.get("text_missing", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    df_ai      = df[~mask_no_text].copy()
+    df_no_text = df[mask_no_text].copy()
+    if len(df_no_text) > 0:
+        print(f"[enrich] Rating-only rows (no text): {len(df_no_text)} — deriving sentiment from star rating")
+        df_no_text["sentiment"] = df_no_text["rating_int"].apply(_sentiment_from_rating)
+        df_no_text["category"]  = "Other"
+        df_no_text["summary"]   = "Rating-only feedback (no text provided)."
+    return df_ai, df_no_text
 
 
-def _split_new_existing(df: pd.DataFrame, db_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split df into rows needing enrichment vs already in DB.
-    Already-done rows get their enriched columns (sentiment/category/summary) merged in from DB."""
-    import sqlite3, os
-    existing_ids = _load_existing_ids(db_path)
-    mask_new = ~df["id"].astype(str).isin(existing_ids)
-    to_enrich   = df[mask_new].copy()
-    already_ids = df[~mask_new]["id"].astype(str).tolist()
-
-    if not already_ids:
-        return to_enrich, pd.DataFrame()
-
-    # Fetch enriched columns from DB for already-done rows
-    try:
-        conn = sqlite3.connect(db_path)
-        placeholders = ",".join("?" * len(already_ids))
-        enriched_from_db = pd.read_sql(
-            f"SELECT id, sentiment, category, summary FROM feedback WHERE id IN ({placeholders})",
-            conn, params=already_ids
-        )
-        conn.close()
-        enriched_from_db["id"] = enriched_from_db["id"].astype(str)
-    except Exception:
-        # If DB read fails, just re-enrich those rows
-        return df, pd.DataFrame()
-
-    # Merge enriched columns back onto the already-done slice
-    already_done = df[~mask_new].copy()
-    already_done["id"] = already_done["id"].astype(str)
-    already_done = already_done.merge(enriched_from_db, on="id", how="left")
-
-    return to_enrich, already_done
+def _attach_results(df: pd.DataFrame, sentiments: list, categories: list, summaries: list) -> pd.DataFrame:
+    df = df.copy()
+    df["sentiment"] = sentiments
+    df["category"]  = categories
+    df["summary"]   = summaries
+    print(f"[enrich] Sentiment breakdown:")
+    for s, cnt in df["sentiment"].value_counts().items():
+        print(f"         {s}: {cnt}")
+    return df
 
 
 # ── Sequential mode (safe default) ──────────────────────────────────────────
-def enrich(df: pd.DataFrame, skip_ai: bool = False, db_path: str = None) -> tuple[pd.DataFrame, TokenUsage]:
-    """Process batches sequentially. Returns (enriched_df, token_usage).
-    Skips rows already present in feedback.db (idempotent)."""
-    from config import DB_PATH as DEFAULT_DB
+def enrich(df: pd.DataFrame, skip_ai: bool = False) -> tuple[pd.DataFrame, TokenUsage]:
+    """
+    Process all rows sequentially through AI.
+    Rows with text_missing=True skip AI — sentiment derived from star rating instead.
+    Always calls AI fresh — does NOT use previously stored results.
+    """
     token_usage = TokenUsage()
 
     if skip_ai:
@@ -217,36 +197,17 @@ def enrich(df: pd.DataFrame, skip_ai: bool = False, db_path: str = None) -> tupl
         df["summary"]   = "AI enrichment skipped."
         return df, token_usage
 
-    # ── Idempotent: skip already-enriched rows ───────────────────────────────
-    to_enrich, already_done = _split_new_existing(df, db_path or DEFAULT_DB)
-    if len(already_done) > 0:
-        print(f"[enrich] ⚡ Skipping {len(already_done)} rows already in DB — saving tokens!")
-    if len(to_enrich) == 0:
-        print("[enrich] All rows already enriched. Nothing to do.")
-        return df, token_usage
-
-    rows = to_enrich.to_dict("records")
-    total = len(rows)
-    print(f"[enrich] Sequential mode — {total:,} new rows in batches of {AI_BATCH_SIZE}...")
-
-    # ── Rating-only rows (text_missing) get sentiment from rating, skip AI ──
-    mask_no_text = to_enrich.get("text_missing", pd.Series(False, index=to_enrich.index)).fillna(False)
-    df_ai      = to_enrich[~mask_no_text].copy()
-    df_no_text = to_enrich[mask_no_text].copy()
-    if len(df_no_text) > 0:
-        print(f"[enrich] Rating-only rows (no text): {len(df_no_text)} — deriving sentiment from rating")
-        df_no_text["sentiment"] = df_no_text["rating_int"].apply(_sentiment_from_rating)
-        df_no_text["category"]  = "Other"
-        df_no_text["summary"]   = "Rating-only feedback (no text provided)."
+    # Split text rows (go to AI) from rating-only rows (derive from star)
+    df_ai, df_no_text = _split_text_and_rating_only(df)
 
     rows  = df_ai.to_dict("records")
     total = len(rows)
-    if total == 0 and len(df_no_text) == 0:
-        print("[enrich] Nothing to enrich.")
-        enriched_new = _attach_results(to_enrich, [], [], [])
-        return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
 
-    print(f"[enrich] Sequential mode — {total:,} text rows in batches of {AI_BATCH_SIZE}...")
+    if total == 0:
+        print("[enrich] No text rows — all are rating-only.")
+        return pd.concat([df_ai, df_no_text], ignore_index=True), token_usage
+
+    print(f"[enrich] Sequential mode — {total:,} rows in batches of {AI_BATCH_SIZE}...")
 
     sentiments, categories, summaries = [], [], []
     for start in range(0, total, AI_BATCH_SIZE):
@@ -262,16 +223,18 @@ def enrich(df: pd.DataFrame, skip_ai: bool = False, db_path: str = None) -> tupl
 
     print()
     print(f"[enrich] Token summary: {token_usage.summary()}")
-    enriched_ai = _attach_results(df_ai, sentiments, categories, summaries) if total > 0 else df_ai
-    enriched_new = pd.concat([enriched_ai, df_no_text], ignore_index=True)
-    return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
+
+    enriched_ai = _attach_results(df_ai, sentiments, categories, summaries)
+    return pd.concat([enriched_ai, df_no_text], ignore_index=True), token_usage
 
 
 # ── Parallel mode (faster) ───────────────────────────────────────────────────
-def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = MAX_WORKERS, db_path: str = None) -> tuple[pd.DataFrame, TokenUsage]:
-    """Process batches concurrently. Returns (enriched_df, token_usage).
-    Skips rows already present in feedback.db (idempotent)."""
-    from config import DB_PATH as DEFAULT_DB
+def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = MAX_WORKERS) -> tuple[pd.DataFrame, TokenUsage]:
+    """
+    Process all rows concurrently through AI.
+    Rows with text_missing=True skip AI — sentiment derived from star rating instead.
+    Always calls AI fresh — does NOT use previously stored results.
+    """
     token_usage = TokenUsage()
 
     if skip_ai:
@@ -282,37 +245,18 @@ def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = 
         df["summary"]   = "AI enrichment skipped."
         return df, token_usage
 
-    # ── Idempotent: skip already-enriched rows ───────────────────────────────
-    to_enrich, already_done = _split_new_existing(df, db_path or DEFAULT_DB)
-    if len(already_done) > 0:
-        print(f"[enrich] ⚡ Skipping {len(already_done)} rows already in DB — saving tokens!")
-    if len(to_enrich) == 0:
-        print("[enrich] All rows already enriched. Nothing to do.")
-        return df, token_usage
-
-    rows = to_enrich.to_dict("records")
-    total = len(rows)
-
-    # ── Rating-only rows (text_missing) get sentiment from rating, skip AI ──
-    mask_no_text = to_enrich.get("text_missing", pd.Series(False, index=to_enrich.index)).fillna(False)
-    df_ai      = to_enrich[~mask_no_text].copy()
-    df_no_text = to_enrich[mask_no_text].copy()
-    if len(df_no_text) > 0:
-        print(f"[enrich] Rating-only rows (no text): {len(df_no_text)} — deriving sentiment from rating")
-        df_no_text["sentiment"] = df_no_text["rating_int"].apply(_sentiment_from_rating)
-        df_no_text["category"]  = "Other"
-        df_no_text["summary"]   = "Rating-only feedback (no text provided)."
+    # Split text rows (go to AI) from rating-only rows (derive from star)
+    df_ai, df_no_text = _split_text_and_rating_only(df)
 
     rows    = df_ai.to_dict("records")
     total   = len(rows)
     batches = [rows[i : i + AI_BATCH_SIZE] for i in range(0, total, AI_BATCH_SIZE)]
 
     if total == 0:
-        print("[enrich] No text rows to AI-enrich.")
-        enriched_new = pd.concat([df_ai, df_no_text], ignore_index=True)
-        return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
+        print("[enrich] No text rows — all are rating-only.")
+        return pd.concat([df_ai, df_no_text], ignore_index=True), token_usage
 
-    print(f"[enrich] Parallel mode — {total:,} text rows | {len(batches)} batches | {max_workers} workers")
+    print(f"[enrich] Parallel mode — {total:,} rows | {len(batches)} batches | {max_workers} workers")
 
     results_map = {}
     completed_count = 0
@@ -340,19 +284,5 @@ def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = 
             categories.append(r["category"])
             summaries.append(r["summary"])
 
-    enriched_ai  = _attach_results(df_ai, sentiments, categories, summaries)
-    enriched_new = pd.concat([enriched_ai, df_no_text], ignore_index=True)
-    return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
-
-
-def _attach_results(df, sentiments, categories, summaries) -> pd.DataFrame:
-    df = df.copy()
-    if not sentiments:
-        return df
-    df["sentiment"] = sentiments
-    df["category"]  = categories
-    df["summary"]   = summaries
-    print(f"[enrich] Done. Sentiment breakdown:")
-    for s, cnt in df["sentiment"].value_counts().items():
-        print(f"         {s}: {cnt}")
-    return df
+    enriched_ai = _attach_results(df_ai, sentiments, categories, summaries)
+    return pd.concat([enriched_ai, df_no_text], ignore_index=True), token_usage

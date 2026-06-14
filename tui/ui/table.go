@@ -2,9 +2,12 @@ package ui
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"quickcart-tui/db"
 
@@ -14,6 +17,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// ExportDoneMsg carries the result of a CSV export
+type ExportDoneMsg struct {
+	Path string
+	Err  error
+	Rows int
+}
 
 var sentimentFilters = []string{"all", "negative", "positive", "neutral"}
 var categoryFilters = []string{"All", "Billing", "App Bug", "Delivery", "Staff/Support", "Other"}
@@ -231,20 +241,21 @@ func highlightMatch(s, pattern string, mode searchMode) string {
 // ── TableModel ────────────────────────────────────────────────────────────────
 
 type TableModel struct {
-	sqlDB      *sql.DB
-	table      table.Model
-	search     textinput.Model
-	popup      popupModel
-	sentIdx    int
-	catIdx     int
-	searchMode searchMode
+	sqlDB         *sql.DB
+	table         table.Model
+	search        textinput.Model
+	popup         popupModel
+	sentIdx       int
+	catIdx        int
+	searchMode    searchMode
 	searchFocused bool
-	allRows    []db.Feedback   // full set (SQL filtered only)
-	filtered   []matchedRow    // after Go-side pattern filter
-	width      int
-	height     int
-	status     string
-	searchErr  error
+	allRows       []db.Feedback // full set (SQL filtered only)
+	filtered      []matchedRow  // after Go-side pattern filter
+	width         int
+	height        int
+	status        string
+	searchErr     error
+	exportStatus  string // last export result message
 }
 
 func NewTable(sqlDB *sql.DB) TableModel {
@@ -385,6 +396,13 @@ func (m TableModel) Update(msg tea.Msg) (TableModel, tea.Cmd) {
 				m.searchMode = modeLiteral
 			}
 			m.applyFilter()
+		case "e":
+			// Export current filtered view to timestamped CSV
+			rows := make([]db.Feedback, len(m.filtered))
+			for i, mr := range m.filtered {
+				rows[i] = mr.row
+			}
+			return m, exportCSV(rows)
 		case "s":
 			m.sentIdx = (m.sentIdx + 1) % len(sentimentFilters)
 			m.reloadAll()
@@ -400,8 +418,50 @@ func (m TableModel) Update(msg tea.Msg) (TableModel, tea.Cmd) {
 		default:
 			m.table, cmd = m.table.Update(msg)
 		}
+
+	case ExportDoneMsg:
+		if msg.Err != nil {
+			m.exportStatus = StyleStatusErr.Render(fmt.Sprintf("  ✗ Export failed: %s", msg.Err.Error()))
+		} else {
+			m.exportStatus = StyleStatusOK.Render(fmt.Sprintf("  ✓ Exported %d rows → %s", msg.Rows, msg.Path))
+		}
 	}
 	return m, cmd
+}
+
+// exportCSV writes the current filtered rows to a timestamped CSV file
+func exportCSV(rows []db.Feedback) tea.Cmd {
+	return func() tea.Msg {
+		if len(rows) == 0 {
+			return ExportDoneMsg{Err: fmt.Errorf("no rows to export")}
+		}
+		_ = os.MkdirAll("output", 0755)
+		path := fmt.Sprintf("output/export_%s.csv", time.Now().Format("2006-01-02_15-04-05"))
+		f, err := os.Create(path)
+		if err != nil {
+			return ExportDoneMsg{Err: err}
+		}
+		defer f.Close()
+		w := csv.NewWriter(f)
+		_ = w.Write([]string{"id", "timestamp", "source", "rating", "sentiment", "category", "summary", "feedback_text", "rating_contradiction", "timestamp_missing"})
+		for _, r := range rows {
+			rc := "0"
+			if r.RatingContradiction {
+				rc = "1"
+			}
+			tm := "0"
+			if r.TimestampMissing {
+				tm = "1"
+			}
+			_ = w.Write([]string{
+				r.ID, r.Timestamp, r.Source,
+				fmt.Sprintf("%.0f", r.Rating),
+				r.Sentiment, r.Category, r.Summary, r.FeedbackText, rc, tm,
+			})
+		}
+		w.Flush()
+		return ExportDoneMsg{Path: path, Rows: len(rows)}
+	}
 }
 
 func (m TableModel) View() string {
@@ -461,7 +521,7 @@ func (m TableModel) View() string {
 	}
 
 	help := StyleHelp.Render(
-		"  [/] search  [ctrl+r] regex  [s] sentiment  [c] category  [r] reset  [enter] detail  [↑↓] nav",
+		"  [/] search  [ctrl+r] regex  [s] sentiment  [c] category  [r] reset  [e] export CSV  [enter] detail  [↑↓] nav",
 	)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
@@ -472,6 +532,12 @@ func (m TableModel) View() string {
 		"",
 		detail,
 		"",
+		func() string {
+			if m.exportStatus != "" {
+				return m.exportStatus + "\n"
+			}
+			return ""
+		}(),
 		help,
 	)
 }
