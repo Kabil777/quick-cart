@@ -165,11 +165,12 @@ func (m model) View() string {
 
 	header := m.renderHeader()
 	tabs := m.renderTabs()
-	content := m.renderContent()
 	help := m.renderHelp()
+	content := m.renderContent()
 
-	// Build exact view string without JoinVertical to avoid unexpected newlines
-	view := header + "\n" + tabs + "\n" + content + "\n" + help
+	// Build exact view string without JoinVertical to avoid unexpected newlines.
+	// Help is now placed just below the top bar (tabs) as requested.
+	view := header + "\n" + tabs + "\n" + help + "\n" + content
 
 	// Paint the entire terminal width/height with spaces to erase old frames (bleed-through fix)
 	return lipgloss.Place(
