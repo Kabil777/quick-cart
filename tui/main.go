@@ -190,10 +190,16 @@ func (m model) renderTabs() string {
 }
 
 func (m model) renderContent() string {
-	h := m.height - 6 // account for header + tabs + help
+	// header(2) + tabs(1) + help(1) + spare(1) = 5 reserved lines
+	h := m.height - 5
 	if h < 5 {
 		h = 5
 	}
+	w := m.width
+	if w < 40 {
+		w = 40
+	}
+
 	var content string
 	switch m.activeTab {
 	case tabDashboard:
@@ -207,7 +213,10 @@ func (m model) renderContent() string {
 	case tabHistory:
 		content = m.history.View()
 	}
-	return lipgloss.NewStyle().Height(h).MaxHeight(h).Render(content)
+
+	// lipgloss.Place fills the full w×h block with spaces — this erases
+	// any residual text from the previously rendered tab (the bleed-through fix).
+	return lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, content)
 }
 
 func (m model) renderHelp() string {
