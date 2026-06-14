@@ -336,7 +336,13 @@ func (m *TableModel) applyFilter() {
 func (m TableModel) WithSize(w, h int) TableModel {
 	m.width = w
 	m.height = h
-	m.table.SetHeight(h - 14)
+	// Reserve lines: filterBar(1) + searchBox(0-3) + gap(1) + detail(0-3) + gap(1) + help(1) = ~7-11
+	// Use h-12 so table has breathing room regardless of optional elements
+	tableH := h - 12
+	if tableH < 5 {
+		tableH = 5
+	}
+	m.table.SetHeight(tableH)
 	m.popup = newPopup(w, h)
 	return m
 }
@@ -469,6 +475,8 @@ func (m TableModel) View() string {
 		return m.popup.View()
 	}
 
+	var sb strings.Builder
+
 	// ── Mode badge ─────────────────────────────────────────────────────────
 	modeBadge := lipgloss.NewStyle().
 		Foreground(White).Background(Gray).Padding(0, 1).Render("LITERAL")
@@ -482,26 +490,28 @@ func (m TableModel) View() string {
 	sentLabel := lipgloss.NewStyle().Foreground(sentColor).Bold(true).
 		Render(sentimentFilters[m.sentIdx])
 	catLabel := StyleAccent.Render(categoryFilters[m.catIdx])
-
 	filterBar := fmt.Sprintf("  %s  Sentiment: [%s]   Category: [%s]   %s",
 		modeBadge, sentLabel, catLabel, StyleMuted.Render(m.status))
+	sb.WriteString(filterBar + "\n")
 
-	// ── Search box ─────────────────────────────────────────────────────────
-	searchBox := ""
+	// ── Search box (only when active or has value) ──────────────────────────
 	if m.searchFocused || m.search.Value() != "" {
-		inputStyle := StyleInput
+		inputStyle := StyleInput.Width(m.width - 6)
 		if m.searchErr != nil {
 			inputStyle = lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder()).BorderForeground(Red).Padding(0, 1)
+				Border(lipgloss.NormalBorder()).BorderForeground(Red).
+				Padding(0, 1).Width(m.width - 6)
 		}
-		searchBox = "\n" + inputStyle.Render("  🔍 "+m.search.View()) + "\n"
+		sb.WriteString(inputStyle.Render("  🔍 "+m.search.View()) + "\n")
 		if m.searchErr != nil {
-			searchBox += StyleStatusErr.Render("  "+m.searchErr.Error()) + "\n"
+			sb.WriteString(StyleStatusErr.Render("  "+m.searchErr.Error()) + "\n")
 		}
 	}
 
-	// ── Detail strip ───────────────────────────────────────────────────────
-	detail := ""
+	// ── Table ──────────────────────────────────────────────────────────────
+	sb.WriteString(m.table.View() + "\n")
+
+	// ── Detail strip (only when a row is selected) ─────────────────────────
 	if idx := m.table.Cursor(); idx >= 0 && idx < len(m.filtered) {
 		r := m.filtered[idx].row
 		matchStr := ""
@@ -512,32 +522,24 @@ func (m TableModel) View() string {
 		if r.RatingContradiction {
 			flags = "  " + StyleStatusErr.Render("⚠ rating conflict")
 		}
-		detail = StyleCard.Width(m.width - 4).Render(
+		detail := StyleCard.Width(m.width - 4).Render(
 			StyleBold.Render("ID "+r.ID)+" · "+
 				SentimentStyle(r.Sentiment).Render(r.Sentiment)+" · "+
 				StyleAccent.Render(r.Category)+flags+matchStr+"\n"+
 				StyleMuted.Render("↳ ")+Truncate(r.Summary, m.width-20),
 		)
+		sb.WriteString(detail + "\n")
 	}
 
-	help := StyleHelp.Render(
-		"  [/] search  [ctrl+r] regex  [s] sentiment  [c] category  [r] reset  [e] export CSV  [enter] detail  [↑↓] nav",
-	)
+	// ── Export status (only when set) ──────────────────────────────────────
+	if m.exportStatus != "" {
+		sb.WriteString(m.exportStatus + "\n")
+	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		"",
-		filterBar,
-		searchBox,
-		m.table.View(),
-		"",
-		detail,
-		"",
-		func() string {
-			if m.exportStatus != "" {
-				return m.exportStatus + "\n"
-			}
-			return ""
-		}(),
-		help,
-	)
+	// ── Help bar ───────────────────────────────────────────────────────────
+	sb.WriteString(StyleHelp.Render(
+		"  [/] search  [ctrl+r] regex  [s] sentiment  [c] category  [r] reset  [e] export  [enter] detail  [↑↓] nav",
+	))
+
+	return sb.String()
 }
