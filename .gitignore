@@ -1,0 +1,63 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+config_local.py
+
+# ── Generated output ──────────────────────────────────────────────────────────
+output/
+# Keep the output directory tracked (for README references) but ignore content:
+!output/.gitkeep
+
+# ── SQLite databases ──────────────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ── Go build artifacts ────────────────────────────────────────────────────────
+quickcart-tui
+tui/quickcart-tui
+*.exe
+*.test
+*.out
+
+# ── Go module cache (keep go.mod / go.sum) ────────────────────────────────────
+# go.sum is intentionally committed
+
+# ── IDE / Editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Jupyter (if any notebooks exist) ─────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
