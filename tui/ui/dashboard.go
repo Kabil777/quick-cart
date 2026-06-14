@@ -3,6 +3,7 @@ package ui
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"quickcart-tui/db"
 
@@ -95,11 +96,12 @@ func (m DashboardModel) View() string {
 	}
 	catCard := StyleCard.Width(col - 4).Render(catTitle + "\n\n" + catLines)
 
-	// ── Summary metric cards ───────────────────────────────────────────────
-	totalCard   := metricCard("Total Processed",  fmt.Sprintf("%d", s.Total),   Purple)
-	droppedCard := metricCard("Rows Dropped",     fmt.Sprintf("%d", s.Dropped), Gray)
-	flaggedCard := metricCard("Rating Conflicts", fmt.Sprintf("%d", s.Flagged), Amber)
-	healthCard  := metricCard("Pipeline",         "✓ Complete",                  Green)
+	// ── Summary metric cards (top row) ─────────────────────────────────────
+	topCardW := 18
+	totalCard   := metricCard("Total Processed",  fmt.Sprintf("%d", s.Total),   Purple, topCardW)
+	droppedCard := metricCard("Rows Dropped",     fmt.Sprintf("%d", s.Dropped), Gray,   topCardW)
+	flaggedCard := metricCard("Rating Conflicts", fmt.Sprintf("%d", s.Flagged), Amber,  topCardW)
+	healthCard  := metricCard("Pipeline",         "✓ Complete",                  Green,  topCardW)
 
 	topRow := lipgloss.JoinHorizontal(lipgloss.Top,
 		totalCard+"  ", droppedCard+"  ", flaggedCard+"  ", healthCard,
@@ -112,19 +114,47 @@ func (m DashboardModel) View() string {
 		if s.Total > 0 {
 			tokPerRow = t.TotalTokens / s.Total
 		}
-		tpCard := metricCard("Prompt Tokens",    fmt.Sprintf("%d", t.TotalPrompt),      Cyan)
-		tcCard := metricCard("Completion Tokens", fmt.Sprintf("%d", t.TotalCompletion),  Green)
-		ttCard := metricCard("Total Tokens",     fmt.Sprintf("%d", t.TotalTokens),      Purple)
-		teCard := metricCard("Efficiency",       fmt.Sprintf("%d tkns/row", tokPerRow), Amber)
-		taCard := metricCard("API Calls",        fmt.Sprintf("%d", t.TotalAPICalls),    Gray)
 
 		tokenTitle := StyleSection.Render("  AI Token Utilization") +
-			StyleMuted.Render(fmt.Sprintf("  (across %d run(s))", t.TotalRuns))
+			StyleMuted.Render(fmt.Sprintf("   across %d run(s)", t.TotalRuns))
 
-		tokenRow = "\n" + tokenTitle + "\n" +
-			lipgloss.JoinHorizontal(lipgloss.Top,
-				tpCard+"  ", tcCard+"  ", ttCard+"  ", teCard+"  ", taCard,
-			)
+		// 5 cards with 2-space gaps between them (4 gaps × 2 = 8 chars)
+		// Subtract outer indent (2) for total usable width, split evenly by 5
+		usable := m.width - 2 - 8
+		if usable < 70 {
+			usable = 70
+		}
+		tokCardW := usable / 5
+
+		type tokenMetric struct {
+			label string
+			value string
+			color lipgloss.Color
+		}
+		metrics := []tokenMetric{
+			{"Prompt Tokens",     fmt.Sprintf("%d", t.TotalPrompt),    Cyan},
+			{"Completion Tokens", fmt.Sprintf("%d", t.TotalCompletion), Green},
+			{"Total Tokens",      fmt.Sprintf("%d", t.TotalTokens),     Purple},
+			{"Tokens / Row",      fmt.Sprintf("%d", tokPerRow),         Amber},
+			{"API Calls",         fmt.Sprintf("%d", t.TotalAPICalls),   Gray},
+		}
+
+		cards := make([]string, len(metrics))
+		for i, tm := range metrics {
+			cards[i] = metricCard(tm.label, tm.value, tm.color, tokCardW)
+		}
+
+		// All 5 equal-width cards joined horizontally — perfectly aligned
+		tokenCards := lipgloss.JoinHorizontal(lipgloss.Top,
+			cards[0]+"  ",
+			cards[1]+"  ",
+			cards[2]+"  ",
+			cards[3]+"  ",
+			cards[4],
+		)
+
+		divider := StyleMuted.Render(strings.Repeat("─", m.width-4))
+		tokenRow = "\n" + divider + "\n" + tokenTitle + "\n" + tokenCards
 	}
 
 	botRow := lipgloss.JoinHorizontal(lipgloss.Top, sentCard+"  ", catCard)
@@ -138,10 +168,10 @@ func (m DashboardModel) View() string {
 	)
 }
 
-func metricCard(label, value string, color lipgloss.Color) string {
+func metricCard(label, value string, color lipgloss.Color, width int) string {
 	v := lipgloss.NewStyle().Bold(true).Foreground(color).Render(value)
 	l := StyleMuted.Render(label)
-	return StyleCard.Width(18).Render(v + "\n" + l)
+	return StyleCard.Width(width).Render(v + "\n" + l)
 }
 
 func pct(n, total int) float64 {
