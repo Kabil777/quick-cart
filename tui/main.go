@@ -155,25 +155,38 @@ func (m model) View() string {
 	if m.err != nil {
 		return ui.StyleStatusErr.Render("Fatal error: " + m.err.Error() + "\nPress q to quit.")
 	}
+	if m.height == 0 || m.width == 0 {
+		return ""
+	}
 
 	header := m.renderHeader()
-	tabs := m.renderTabs()
-	content := m.renderContent()
-	help := m.renderHelp()
+	tabs   := m.renderTabs()
+	help   := m.renderHelp()
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, tabs, content, help)
+	// Measure chrome height AFTER rendering so we use the real line count.
+	chromeH := lipgloss.Height(header) + lipgloss.Height(tabs) + lipgloss.Height(help)
+	contentH := m.height - chromeH
+	if contentH < 1 {
+		contentH = 1
+	}
+
+	content := m.renderContent(contentH)
+
+	// Simple concatenation — no JoinVertical so no extra newlines are inserted.
+	return header + tabs + "\n" + content + "\n" + help
 }
 
 func (m model) renderHeader() string {
 	brand := ui.StyleBrand.Render("⚡ QuickCart")
-	sub := ui.StyleSubtitle.Render(" Feedback Intelligence System")
+	sub   := ui.StyleSubtitle.Render(" Feedback Intelligence System")
 	right := ui.StyleMuted.Render("q quit · tab switch")
 	gap := m.width - lipgloss.Width(brand+sub) - lipgloss.Width(right) - 2
 	if gap < 0 {
 		gap = 0
 	}
 	spacer := lipgloss.NewStyle().Width(gap).Render("")
-	return lipgloss.JoinHorizontal(lipgloss.Center, brand, sub, spacer, right) + "\n"
+	// No trailing \n — let View() control line breaks
+	return lipgloss.JoinHorizontal(lipgloss.Center, brand, sub, spacer, right)
 }
 
 func (m model) renderTabs() string {
@@ -189,12 +202,7 @@ func (m model) renderTabs() string {
 	return ui.StyleTabBar.Width(m.width).Render(row)
 }
 
-func (m model) renderContent() string {
-	// header(2) + tabs(1) + help(1) + spare(2) = 6 reserved lines
-	h := m.height - 6
-	if h < 5 {
-		h = 5
-	}
+func (m model) renderContent(h int) string {
 	w := m.width
 	if w < 40 {
 		w = 40
@@ -214,11 +222,9 @@ func (m model) renderContent() string {
 		content = m.history.View()
 	}
 
-	// Two-layer clear strategy:
-	// 1. Width(w) pads every line to terminal width — covers old wider content
-	// 2. Height(h) pads short content downward with space-filled lines
-	// 3. MaxHeight(h) hard-clips content that overflows h — prevents bleed-through
-	// Together they guarantee exactly w×h cells are written on every render.
+	// Pad short content and hard-clip overflow to exactly h lines.
+	// Width(w) ensures every line (including blank padding) is w chars wide,
+	// which physically overwrites any residual content from previous renders.
 	return lipgloss.NewStyle().
 		Width(w).
 		Height(h).
