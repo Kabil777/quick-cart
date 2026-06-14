@@ -113,7 +113,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Delegate to active screen
+	// ── Always route runner messages regardless of active tab ─────────────
+	// This keeps the cron countdown ticking and pipeline output streaming
+	// even when the user is viewing a different tab.
+	switch msg.(type) {
+	case ui.ScheduleTickMsg, ui.PipelineLineMsg, ui.PipelineDoneMsg:
+		var cmd tea.Cmd
+		m.runner, cmd = m.runner.Update(msg)
+		cmds = append(cmds, cmd)
+		// If cron fires an auto-run while on another tab, switch to runner
+		if _, isLine := msg.(ui.PipelineLineMsg); isLine && m.activeTab != tabRunner {
+			// don't force switch — keep user where they are
+		}
+		return m, tea.Batch(cmds...)
+	}
+
+	// ── Delegate to active screen ──────────────────────────────────────────
 	switch m.activeTab {
 	case tabTable:
 		var cmd tea.Cmd
@@ -197,6 +212,9 @@ func (m model) renderContent() string {
 
 func (m model) renderHelp() string {
 	hints := "[1] Dashboard  [2] Feedback  [3] Run  [4] Report  [5] History  [tab] cycle  [q] quit"
+	if m.activeTab == tabRunner {
+		hints = "[enter] run  [p] parallel  [f] file  [d] default  [c] schedule  [x] off  [↑↓] scroll  [q] quit"
+	}
 	return ui.StyleHelp.Width(m.width).Render(hints)
 }
 
