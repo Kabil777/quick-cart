@@ -263,13 +263,15 @@ func NewTable(sqlDB *sql.DB) TableModel {
 	ti.Placeholder = "Pattern search all columns… (ctrl+r: regex mode)"
 	ti.CharLimit = 120
 
+	// Fixed columns: ID(6) Sent(9) Category(13) Source(16) MatchIn(9)
+	// Summary gets remaining space
 	cols := []table.Column{
-		{Title: "ID",       Width: 5},
-		{Title: "Sent.",    Width: 10},
+		{Title: "ID",       Width: 6},
+		{Title: "Sent.",    Width: 9},
 		{Title: "Category", Width: 13},
-		{Title: "Source",   Width: 12},
-		{Title: "Match in", Width: 10},
-		{Title: "Summary",  Width: 42},
+		{Title: "Source",   Width: 16},
+		{Title: "Match in", Width: 9},
+		{Title: "Summary",  Width: 35},
 	}
 	t := table.New(
 		table.WithColumns(cols),
@@ -289,6 +291,33 @@ func NewTable(sqlDB *sql.DB) TableModel {
 	}
 	m.reloadAll()
 	return m
+}
+
+// resizeCols recalculates column widths so Summary fills remaining terminal width.
+// Fixed cols: ID(6) Sent(9) Category(13) Source(16) MatchIn(9) + borders(~7) = 60
+// Summary gets whatever is left, minimum 20.
+func resizeCols(w int) []table.Column {
+	const (
+		wID     = 6
+		wSent   = 9
+		wCat    = 13
+		wSrc    = 16
+		wMatch  = 9
+		borders = 8 // column separators + outer border
+	)
+	fixed := wID + wSent + wCat + wSrc + wMatch + borders
+	wSummary := w - fixed
+	if wSummary < 20 {
+		wSummary = 20
+	}
+	return []table.Column{
+		{Title: "ID",       Width: wID},
+		{Title: "Sent.",    Width: wSent},
+		{Title: "Category", Width: wCat},
+		{Title: "Source",   Width: wSrc},
+		{Title: "Match in", Width: wMatch},
+		{Title: "Summary",  Width: wSummary},
+	}
 }
 
 // reloadAll fetches from DB (SQL filters only) then applies Go-side search
@@ -336,9 +365,10 @@ func (m *TableModel) applyFilter() {
 func (m TableModel) WithSize(w, h int) TableModel {
 	m.width = w
 	m.height = h
-	// Reserve lines: filterBar(1) + searchBox(0-3) + gap(1) + detail(0-3) + gap(1) + help(1) = ~7-11
-	// Use h-12 so table has breathing room regardless of optional elements
-	tableH := h - 12
+	// Recalculate column widths to fit terminal width
+	m.table.SetColumns(resizeCols(w))
+	// Reserve: filterBar(1) + searchBox(0-2) + detail(0-3) + exportStatus(0-1) + help(1) ~= 10
+	tableH := h - 10
 	if tableH < 5 {
 		tableH = 5
 	}
