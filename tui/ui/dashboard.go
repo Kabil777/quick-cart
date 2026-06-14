@@ -120,7 +120,7 @@ func (m DashboardModel) View() string {
 
 		// 5 cards with 2-space gaps between them (4 gaps × 2 = 8 chars)
 		// Subtract outer indent (2) for total usable width, split evenly by 5
-		usable := m.width - 2 - 8
+		usable := m.width - 10
 		if usable < 70 {
 			usable = 70
 		}
@@ -153,7 +153,11 @@ func (m DashboardModel) View() string {
 			cards[4],
 		)
 
-		divider := StyleMuted.Render(strings.Repeat("─", m.width-4))
+		dividerW := m.width - 4
+		if dividerW < 1 {
+			dividerW = 1
+		}
+		divider := StyleMuted.Render(strings.Repeat("─", dividerW))
 		tokenRow = "\n" + divider + "\n" + tokenTitle + "\n" + tokenCards
 	}
 
