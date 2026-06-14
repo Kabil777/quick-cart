@@ -2,7 +2,7 @@
 
 > An end-to-end AI-powered customer feedback analytics pipeline with an interactive terminal UI — built for the QuickCart food delivery platform.
 
-![Dashboard](docs/screenshots/dashboard.jpg)
+![Dashboard](docs/screenshots/dashboard.png)
 
 ---
 
@@ -137,19 +137,19 @@ cd ..
 
 ### Dashboard — Live Stats + AI Token Utilization
 
-![Dashboard](docs/screenshots/dashboard.jpg)
+![Dashboard](docs/screenshots/dashboard.png)
 
 The Dashboard shows sentiment breakdown, top categories, pipeline health, and a live **AI Token Utilization** row summarising cumulative token costs across all pipeline runs.
 
 ### Feedback — Regex Search Across All Columns
 
-![Feedback Table](docs/screenshots/feedback.jpg)
+![Feedback Table](docs/screenshots/feedback.png)
 
 Press `/` to open the search bar. Toggle `ctrl+r` for **REGEX mode** — pattern-match across all 7 columns (`id`, `sentiment`, `category`, `source`, `timestamp`, `summary`, `text`). Matched columns are displayed in the "Match in" column. Press `enter` on any row for a full detail popup.
 
 ### History — Per-Run Token Tracking
 
-![Run History](docs/screenshots/history.jpg)
+![Run History](docs/screenshots/history.png)
 
 Every pipeline run is logged to `output/runs.db`. The History tab shows the full run list with status badges (`✓` / `⚡` / `✗`), row counts, sentiment breakdown, and **per-run token utilisation** including prompt/completion split, API call count, retries, and efficiency (tokens/row).
 
