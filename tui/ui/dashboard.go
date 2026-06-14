@@ -132,16 +132,19 @@ func (m DashboardModel) View() string {
 			color lipgloss.Color
 		}
 		metrics := []tokenMetric{
-			{"Prompt Tokens",     fmt.Sprintf("%d", t.TotalPrompt),    Cyan},
-			{"Completion Tokens", fmt.Sprintf("%d", t.TotalCompletion), Green},
-			{"Total Tokens",      fmt.Sprintf("%d", t.TotalTokens),     Purple},
-			{"Tokens / Row",      fmt.Sprintf("%d", tokPerRow),         Amber},
-			{"API Calls",         fmt.Sprintf("%d", t.TotalAPICalls),   Gray},
+			{"Prompt",     fmt.Sprintf("%d", t.TotalPrompt),    Cyan},
+			{"Completion", fmt.Sprintf("%d", t.TotalCompletion), Green},
+			{"Total",      fmt.Sprintf("%d", t.TotalTokens),     Purple},
+			{"Avg / Row",  fmt.Sprintf("%d", tokPerRow),         Amber},
+			{"API Calls",  fmt.Sprintf("%d", t.TotalAPICalls),   Gray},
 		}
 
 		cards := make([]string, len(metrics))
 		for i, tm := range metrics {
-			cards[i] = metricCard(tm.label, tm.value, tm.color, tokCardW)
+			cards[i] = StyleCard.Width(tokCardW).MaxWidth(tokCardW).Render(
+				lipgloss.NewStyle().Bold(true).Foreground(tm.color).Render(tm.value) + "\n" +
+				StyleMuted.Render(tm.label),
+			)
 		}
 
 		// All 5 equal-width cards joined horizontally — perfectly aligned

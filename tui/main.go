@@ -95,25 +95,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "1":
 			m.activeTab = tabDashboard
-			return m, nil
+			return m, tea.ClearScreen
 		case "2":
 			m.activeTab = tabTable
-			return m, nil
+			return m, tea.ClearScreen
 		case "3":
 			m.activeTab = tabRunner
-			return m, nil
+			return m, tea.ClearScreen
 		case "4":
 			m.activeTab = tabReport
-			return m, nil
+			return m, tea.ClearScreen
 		case "5":
 			m.activeTab = tabHistory
-			return m, nil
+			return m, tea.ClearScreen
 		case "tab":
 			m.activeTab = (m.activeTab + 1) % tabCount
-			return m, nil
+			return m, tea.ClearScreen
 		case "shift+tab":
 			m.activeTab = (m.activeTab - 1 + tabCount) % tabCount
-			return m, nil
+			return m, tea.ClearScreen
 		}
 	}
 
