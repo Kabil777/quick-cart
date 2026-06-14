@@ -20,6 +20,19 @@ from config import (
 _client_local = threading.local()  # thread-safe client per thread
 
 
+def _sentiment_from_rating(rating) -> str:
+    """Derive sentiment from star rating when no text is available."""
+    import math
+    if rating is None or (isinstance(rating, float) and math.isnan(rating)):
+        return "neutral"
+    r = float(rating)
+    if r <= 2:
+        return "negative"
+    if r >= 4:
+        return "positive"
+    return "neutral"
+
+
 @dataclass
 class TokenUsage:
     """Accumulates token counts across all API calls in a run."""
@@ -216,6 +229,25 @@ def enrich(df: pd.DataFrame, skip_ai: bool = False, db_path: str = None) -> tupl
     total = len(rows)
     print(f"[enrich] Sequential mode — {total:,} new rows in batches of {AI_BATCH_SIZE}...")
 
+    # ── Rating-only rows (text_missing) get sentiment from rating, skip AI ──
+    mask_no_text = to_enrich.get("text_missing", pd.Series(False, index=to_enrich.index)).fillna(False)
+    df_ai      = to_enrich[~mask_no_text].copy()
+    df_no_text = to_enrich[mask_no_text].copy()
+    if len(df_no_text) > 0:
+        print(f"[enrich] Rating-only rows (no text): {len(df_no_text)} — deriving sentiment from rating")
+        df_no_text["sentiment"] = df_no_text["rating_int"].apply(_sentiment_from_rating)
+        df_no_text["category"]  = "Other"
+        df_no_text["summary"]   = "Rating-only feedback (no text provided)."
+
+    rows  = df_ai.to_dict("records")
+    total = len(rows)
+    if total == 0 and len(df_no_text) == 0:
+        print("[enrich] Nothing to enrich.")
+        enriched_new = _attach_results(to_enrich, [], [], [])
+        return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
+
+    print(f"[enrich] Sequential mode — {total:,} text rows in batches of {AI_BATCH_SIZE}...")
+
     sentiments, categories, summaries = [], [], []
     for start in range(0, total, AI_BATCH_SIZE):
         batch = rows[start : start + AI_BATCH_SIZE]
@@ -230,7 +262,8 @@ def enrich(df: pd.DataFrame, skip_ai: bool = False, db_path: str = None) -> tupl
 
     print()
     print(f"[enrich] Token summary: {token_usage.summary()}")
-    enriched_new = _attach_results(to_enrich, sentiments, categories, summaries)
+    enriched_ai = _attach_results(df_ai, sentiments, categories, summaries) if total > 0 else df_ai
+    enriched_new = pd.concat([enriched_ai, df_no_text], ignore_index=True)
     return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
 
 
@@ -259,9 +292,27 @@ def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = 
 
     rows = to_enrich.to_dict("records")
     total = len(rows)
+
+    # ── Rating-only rows (text_missing) get sentiment from rating, skip AI ──
+    mask_no_text = to_enrich.get("text_missing", pd.Series(False, index=to_enrich.index)).fillna(False)
+    df_ai      = to_enrich[~mask_no_text].copy()
+    df_no_text = to_enrich[mask_no_text].copy()
+    if len(df_no_text) > 0:
+        print(f"[enrich] Rating-only rows (no text): {len(df_no_text)} — deriving sentiment from rating")
+        df_no_text["sentiment"] = df_no_text["rating_int"].apply(_sentiment_from_rating)
+        df_no_text["category"]  = "Other"
+        df_no_text["summary"]   = "Rating-only feedback (no text provided)."
+
+    rows    = df_ai.to_dict("records")
+    total   = len(rows)
     batches = [rows[i : i + AI_BATCH_SIZE] for i in range(0, total, AI_BATCH_SIZE)]
 
-    print(f"[enrich] Parallel mode — {total:,} new rows | {len(batches)} batches | {max_workers} workers")
+    if total == 0:
+        print("[enrich] No text rows to AI-enrich.")
+        enriched_new = pd.concat([df_ai, df_no_text], ignore_index=True)
+        return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
+
+    print(f"[enrich] Parallel mode — {total:,} text rows | {len(batches)} batches | {max_workers} workers")
 
     results_map = {}
     completed_count = 0
@@ -289,12 +340,15 @@ def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = 
             categories.append(r["category"])
             summaries.append(r["summary"])
 
-    enriched_new = _attach_results(to_enrich, sentiments, categories, summaries)
+    enriched_ai  = _attach_results(df_ai, sentiments, categories, summaries)
+    enriched_new = pd.concat([enriched_ai, df_no_text], ignore_index=True)
     return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
 
 
 def _attach_results(df, sentiments, categories, summaries) -> pd.DataFrame:
     df = df.copy()
+    if not sentiments:
+        return df
     df["sentiment"] = sentiments
     df["category"]  = categories
     df["summary"]   = summaries
@@ -302,4 +356,3 @@ def _attach_results(df, sentiments, categories, summaries) -> pd.DataFrame:
     for s, cnt in df["sentiment"].value_counts().items():
         print(f"         {s}: {cnt}")
     return df
-

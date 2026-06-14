@@ -21,6 +21,8 @@ def init_db(db_path: str = DB_PATH):
             timestamp             TEXT,
             timestamp_normalized  TEXT,
             timestamp_missing     INTEGER DEFAULT 0,
+            text_missing          INTEGER DEFAULT 0,
+
             source                TEXT,
             rating                TEXT,
             rating_int            REAL,
@@ -39,6 +41,11 @@ def init_db(db_path: str = DB_PATH):
             raw_row      TEXT
         );
     """)
+    # ── Migrate: add text_missing if it doesn't exist (safe on existing DBs) ─
+    try:
+        conn.execute("ALTER TABLE feedback ADD COLUMN text_missing INTEGER DEFAULT 0")
+    except Exception:
+        pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -52,15 +59,16 @@ def store_cleaned(df: pd.DataFrame, dropped_df: pd.DataFrame, db_path: str = DB_
     for _, row in df.iterrows():
         conn.execute("""
             INSERT OR REPLACE INTO feedback (
-                id, timestamp, timestamp_normalized, timestamp_missing,
+                id, timestamp, timestamp_normalized, timestamp_missing, text_missing,
                 source, rating, rating_int, rating_contradiction,
                 feedback_text, sentiment, category, summary, processed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             str(row["id"]),
             str(row.get("timestamp", "")),
             str(row.get("timestamp_normalized", "")) if pd.notna(row.get("timestamp_normalized")) else None,
             int(row.get("timestamp_missing", 0)),
+            int(row.get("text_missing", 0)),
             str(row.get("source", "")),
             str(row.get("rating", "")),
             float(row["rating_int"]) if pd.notna(row.get("rating_int")) else None,
@@ -93,7 +101,7 @@ def store_cleaned(df: pd.DataFrame, dropped_df: pd.DataFrame, db_path: str = DB_
     export_cols = [
         "id", "timestamp_normalized", "source", "rating_int",
         "feedback_text", "sentiment", "category", "summary",
-        "rating_contradiction", "timestamp_missing",
+        "rating_contradiction", "timestamp_missing", "text_missing",
     ]
     available = [c for c in export_cols if c in df.columns]
     df[available].to_csv(OUTPUT_CSV, index=False)
