@@ -78,11 +78,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.dashboard = m.dashboard.WithSize(m.width, m.height)
-		m.table = m.table.WithSize(m.width, m.height)
-		m.runner = m.runner.WithSize(m.width, m.height)
-		m.report = m.report.WithSize(m.width, m.height)
-		m.history = m.history.WithSize(m.width, m.height)
+		contentH := m.height - 6
+		if contentH < 5 {
+			contentH = 5
+		}
+		m.dashboard = m.dashboard.WithSize(m.width, contentH)
+		m.table = m.table.WithSize(m.width, contentH)
+		m.runner = m.runner.WithSize(m.width, contentH)
+		m.report = m.report.WithSize(m.width, contentH)
+		m.history = m.history.WithSize(m.width, contentH)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -155,13 +159,27 @@ func (m model) View() string {
 	if m.err != nil {
 		return ui.StyleStatusErr.Render("Fatal error: " + m.err.Error() + "\nPress q to quit.")
 	}
+	if m.width == 0 || m.height == 0 {
+		return ""
+	}
 
 	header := m.renderHeader()
 	tabs := m.renderTabs()
 	content := m.renderContent()
 	help := m.renderHelp()
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, tabs, content, help)
+	// Build exact view string without JoinVertical to avoid unexpected newlines
+	view := header + "\n" + tabs + "\n" + content + "\n" + help
+
+	// Paint the entire terminal width/height with spaces to erase old frames (bleed-through fix)
+	return lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Left,
+		lipgloss.Top,
+		view,
+		lipgloss.WithWhitespaceChars(" "),
+	)
 }
 
 func (m model) renderHeader() string {
@@ -173,7 +191,8 @@ func (m model) renderHeader() string {
 		gap = 0
 	}
 	spacer := lipgloss.NewStyle().Width(gap).Render("")
-	return lipgloss.JoinHorizontal(lipgloss.Center, brand, sub, spacer, right) + "\n"
+	// Return without trailing newline so View() can compose cleanly
+	return lipgloss.JoinHorizontal(lipgloss.Center, brand, sub, spacer, right)
 }
 
 func (m model) renderTabs() string {
@@ -190,16 +209,10 @@ func (m model) renderTabs() string {
 }
 
 func (m model) renderContent() string {
-	// header(2) + tabs(1) + help(1) + spare(2) = 6 reserved lines
-	h := m.height - 6
-	if h < 5 {
-		h = 5
+	contentH := m.height - 6
+	if contentH < 5 {
+		contentH = 5
 	}
-	w := m.width
-	if w < 40 {
-		w = 40
-	}
-
 	var content string
 	switch m.activeTab {
 	case tabDashboard:
@@ -214,15 +227,11 @@ func (m model) renderContent() string {
 		content = m.history.View()
 	}
 
-	// Two-layer clear strategy:
-	// 1. Width(w) pads every line to terminal width — covers old wider content
-	// 2. Height(h) pads short content downward with space-filled lines
-	// 3. MaxHeight(h) hard-clips content that overflows h — prevents bleed-through
-	// Together they guarantee exactly w×h cells are written on every render.
+	// Pad or clip to exact content height
 	return lipgloss.NewStyle().
-		Width(w).
-		Height(h).
-		MaxHeight(h).
+		Width(m.width).
+		Height(contentH).
+		MaxHeight(contentH).
 		Render(content)
 }
 
