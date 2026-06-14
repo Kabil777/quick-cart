@@ -141,10 +141,61 @@ def _call_ai(batch: list[dict], attempt: int = 0, token_usage: TokenUsage = None
             ]
 
 
+def _load_existing_ids(db_path: str) -> set:
+    """Return set of IDs already stored in feedback.db (to skip re-enrichment)."""
+    import sqlite3, os
+    if not os.path.exists(db_path):
+        return set()
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute("SELECT id FROM feedback").fetchall()
+        conn.close()
+        return {str(r[0]) for r in rows}
+    except Exception:
+        return set()
+
+
+def _split_new_existing(df: pd.DataFrame, db_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split df into rows needing enrichment vs already in DB.
+    Already-done rows get their enriched columns (sentiment/category/summary) merged in from DB."""
+    import sqlite3, os
+    existing_ids = _load_existing_ids(db_path)
+    mask_new = ~df["id"].astype(str).isin(existing_ids)
+    to_enrich   = df[mask_new].copy()
+    already_ids = df[~mask_new]["id"].astype(str).tolist()
+
+    if not already_ids:
+        return to_enrich, pd.DataFrame()
+
+    # Fetch enriched columns from DB for already-done rows
+    try:
+        conn = sqlite3.connect(db_path)
+        placeholders = ",".join("?" * len(already_ids))
+        enriched_from_db = pd.read_sql(
+            f"SELECT id, sentiment, category, summary FROM feedback WHERE id IN ({placeholders})",
+            conn, params=already_ids
+        )
+        conn.close()
+        enriched_from_db["id"] = enriched_from_db["id"].astype(str)
+    except Exception:
+        # If DB read fails, just re-enrich those rows
+        return df, pd.DataFrame()
+
+    # Merge enriched columns back onto the already-done slice
+    already_done = df[~mask_new].copy()
+    already_done["id"] = already_done["id"].astype(str)
+    already_done = already_done.merge(enriched_from_db, on="id", how="left")
+
+    return to_enrich, already_done
+
+
 # ── Sequential mode (safe default) ──────────────────────────────────────────
-def enrich(df: pd.DataFrame, skip_ai: bool = False) -> tuple[pd.DataFrame, TokenUsage]:
-    """Process batches sequentially. Returns (enriched_df, token_usage)."""
+def enrich(df: pd.DataFrame, skip_ai: bool = False, db_path: str = None) -> tuple[pd.DataFrame, TokenUsage]:
+    """Process batches sequentially. Returns (enriched_df, token_usage).
+    Skips rows already present in feedback.db (idempotent)."""
+    from config import DB_PATH as DEFAULT_DB
     token_usage = TokenUsage()
+
     if skip_ai:
         print("[enrich] --skip-ai mode: filling with placeholders")
         df = df.copy()
@@ -153,9 +204,17 @@ def enrich(df: pd.DataFrame, skip_ai: bool = False) -> tuple[pd.DataFrame, Token
         df["summary"]   = "AI enrichment skipped."
         return df, token_usage
 
-    rows = df.to_dict("records")
+    # ── Idempotent: skip already-enriched rows ───────────────────────────────
+    to_enrich, already_done = _split_new_existing(df, db_path or DEFAULT_DB)
+    if len(already_done) > 0:
+        print(f"[enrich] ⚡ Skipping {len(already_done)} rows already in DB — saving tokens!")
+    if len(to_enrich) == 0:
+        print("[enrich] All rows already enriched. Nothing to do.")
+        return df, token_usage
+
+    rows = to_enrich.to_dict("records")
     total = len(rows)
-    print(f"[enrich] Sequential mode — {total:,} rows in batches of {AI_BATCH_SIZE}...")
+    print(f"[enrich] Sequential mode — {total:,} new rows in batches of {AI_BATCH_SIZE}...")
 
     sentiments, categories, summaries = [], [], []
     for start in range(0, total, AI_BATCH_SIZE):
@@ -171,13 +230,17 @@ def enrich(df: pd.DataFrame, skip_ai: bool = False) -> tuple[pd.DataFrame, Token
 
     print()
     print(f"[enrich] Token summary: {token_usage.summary()}")
-    return _attach_results(df, sentiments, categories, summaries), token_usage
+    enriched_new = _attach_results(to_enrich, sentiments, categories, summaries)
+    return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
 
 
 # ── Parallel mode (faster) ───────────────────────────────────────────────────
-def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = MAX_WORKERS) -> tuple[pd.DataFrame, TokenUsage]:
-    """Process batches concurrently. Returns (enriched_df, token_usage)."""
+def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = MAX_WORKERS, db_path: str = None) -> tuple[pd.DataFrame, TokenUsage]:
+    """Process batches concurrently. Returns (enriched_df, token_usage).
+    Skips rows already present in feedback.db (idempotent)."""
+    from config import DB_PATH as DEFAULT_DB
     token_usage = TokenUsage()
+
     if skip_ai:
         print("[enrich] --skip-ai mode: filling with placeholders")
         df = df.copy()
@@ -186,11 +249,19 @@ def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = 
         df["summary"]   = "AI enrichment skipped."
         return df, token_usage
 
-    rows = df.to_dict("records")
+    # ── Idempotent: skip already-enriched rows ───────────────────────────────
+    to_enrich, already_done = _split_new_existing(df, db_path or DEFAULT_DB)
+    if len(already_done) > 0:
+        print(f"[enrich] ⚡ Skipping {len(already_done)} rows already in DB — saving tokens!")
+    if len(to_enrich) == 0:
+        print("[enrich] All rows already enriched. Nothing to do.")
+        return df, token_usage
+
+    rows = to_enrich.to_dict("records")
     total = len(rows)
     batches = [rows[i : i + AI_BATCH_SIZE] for i in range(0, total, AI_BATCH_SIZE)]
 
-    print(f"[enrich] Parallel mode — {total:,} rows | {len(batches)} batches | {max_workers} workers")
+    print(f"[enrich] Parallel mode — {total:,} new rows | {len(batches)} batches | {max_workers} workers")
 
     results_map = {}
     completed_count = 0
@@ -211,7 +282,6 @@ def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = 
     print()
     print(f"[enrich] Token summary: {token_usage.summary()}")
 
-    # Reconstruct results in original batch order
     sentiments, categories, summaries = [], [], []
     for idx in sorted(results_map.keys()):
         for r in results_map[idx]:
@@ -219,7 +289,8 @@ def enrich_parallel(df: pd.DataFrame, skip_ai: bool = False, max_workers: int = 
             categories.append(r["category"])
             summaries.append(r["summary"])
 
-    return _attach_results(df, sentiments, categories, summaries), token_usage
+    enriched_new = _attach_results(to_enrich, sentiments, categories, summaries)
+    return pd.concat([enriched_new, already_done], ignore_index=True), token_usage
 
 
 def _attach_results(df, sentiments, categories, summaries) -> pd.DataFrame:
@@ -231,3 +302,4 @@ def _attach_results(df, sentiments, categories, summaries) -> pd.DataFrame:
     for s, cnt in df["sentiment"].value_counts().items():
         print(f"         {s}: {cnt}")
     return df
+

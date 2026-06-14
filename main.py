@@ -84,7 +84,17 @@ def main():
         generate()
 
         # ── Complete run record ───────────────────────────────────────────────
-        sent = enriched_df["sentiment"].value_counts().to_dict()
+        if "sentiment" in enriched_df.columns and not enriched_df.empty:
+            sent = enriched_df["sentiment"].value_counts().to_dict()
+        else:
+            # All rows were already in DB — read counts from DB
+            import sqlite3
+            conn = sqlite3.connect(args.db if hasattr(args, 'db') else "output/feedback.db")
+            rows = conn.execute(
+                "SELECT sentiment, COUNT(*) FROM feedback GROUP BY sentiment"
+            ).fetchall()
+            conn.close()
+            sent = {r[0]: r[1] for r in rows}
         complete_run(
             run_id=run_id,
             rows_raw=len(raw_df),
