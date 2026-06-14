@@ -190,8 +190,8 @@ func (m model) renderTabs() string {
 }
 
 func (m model) renderContent() string {
-	// header(2) + tabs(1) + help(1) + spare(1) = 5 reserved lines
-	h := m.height - 5
+	// header(2) + tabs(1) + help(1) + spare(2) = 6 reserved lines
+	h := m.height - 6
 	if h < 5 {
 		h = 5
 	}
@@ -214,9 +214,16 @@ func (m model) renderContent() string {
 		content = m.history.View()
 	}
 
-	// lipgloss.Place fills the full w×h block with spaces — this erases
-	// any residual text from the previously rendered tab (the bleed-through fix).
-	return lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, content)
+	// Two-layer clear strategy:
+	// 1. Width(w) pads every line to terminal width — covers old wider content
+	// 2. Height(h) pads short content downward with space-filled lines
+	// 3. MaxHeight(h) hard-clips content that overflows h — prevents bleed-through
+	// Together they guarantee exactly w×h cells are written on every render.
+	return lipgloss.NewStyle().
+		Width(w).
+		Height(h).
+		MaxHeight(h).
+		Render(content)
 }
 
 func (m model) renderHelp() string {

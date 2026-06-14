@@ -367,8 +367,10 @@ func (m TableModel) WithSize(w, h int) TableModel {
 	m.height = h
 	// Recalculate column widths to fit terminal width
 	m.table.SetColumns(resizeCols(w))
-	// Reserve: filterBar(1) + searchBox(0-2) + detail(0-3) + exportStatus(0-1) + help(1) ~= 10
-	tableH := h - 10
+	// Reserve for all decorations (worst case all optional elements):
+	//   filterBar(1) + searchBox(2) + detail(3) + exportStatus(1) + help(1) = 8
+	//   Plus table borders+header overhead (~3) = ~11. Use h-12 for safety.
+	tableH := h - 12
 	if tableH < 5 {
 		tableH = 5
 	}
